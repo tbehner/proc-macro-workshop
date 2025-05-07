@@ -14,5 +14,6 @@ path = "main.rs"
 bitfield = { path = "bitfield" }
 derive_builder = { path = "builder" }
 derive_debug = { path = "debug" }
+proc-macro2 = "1.0.95"
 seq = { path = "seq" }
 sorted = { path = "sorted" }
