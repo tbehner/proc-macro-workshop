@@ -45,9 +45,11 @@ fn main() {
         .executable("cargo".to_owned())
         .arg("build".to_owned())
         .arg("--release".to_owned())
+        .env("foo".to_string())
         .build()
         .unwrap();
 
     assert_eq!(command.executable, "cargo");
     assert_eq!(command.args, vec!["build", "--release"]);
+    assert_eq!(command.env, vec!["foo"]);
 }
