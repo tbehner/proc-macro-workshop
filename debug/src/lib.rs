@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse::Parse, parse_macro_input, Data, DeriveInput, Expr, ExprAssign, Ident, LitStr, Meta, Result};
@@ -36,6 +37,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let m_input = parse_macro_input!(input as DeriveInput);
     let struct_name = m_input.ident;
+    let type_parameter: Vec<_> = m_input.generics.type_params().collect();
     let struct_name_str = struct_name.to_string();
 
     let mut debug_fields = vec![];
@@ -83,21 +85,49 @@ pub fn derive(input: TokenStream) -> TokenStream {
             },
             None => {
                 quote! {
-                    write!(f, "{}: {:?}, ", #ident_str, &self.#ident)?;
+                    write!(f, "{}: {:?}", #ident_str, &self.#ident)?;
                 }
             }
         }
- 
-    }).collect();
+    })
+    .intersperse(quote! {write!(f, ", ")?;})
+    .collect();
+    
+    eprintln!("============ Length of type parameter list: {}", type_parameter.len());
+    for tp in &type_parameter {
+        eprintln!("Param: {}", tp.ident);
+    
+    }
+    let type_parameter_list: Vec<_> = type_parameter.iter()
+        .map(|tp| &tp.ident)
+        .collect();
+    let type_bounds: Vec<_> = type_parameter.iter()
+        .map(|tp| {
+            let id = &tp.ident;
+            quote!{ #id: std::fmt::Debug }
+        }).collect();
 
-    quote! {
-        impl std::fmt::Debug for #struct_name {
+    let impl_head = if type_parameter.is_empty() {
+        quote! {
+            impl std::fmt::Debug for #struct_name
+        }
+    } else {
+        quote! {
+            impl<#(#type_parameter_list),*> std::fmt::Debug for #struct_name<#(#type_parameter_list),*> 
+                where #(#type_bounds),*
+        }
+    };
+
+
+    let code = quote! {
+        #impl_head {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{} {{ ", #struct_name_str)?;
                 #(#debug_fields_invocation)*
                 write!(f, "}}")
             }
         }
+    };
 
-    }.into()
+    code.into()
 }
