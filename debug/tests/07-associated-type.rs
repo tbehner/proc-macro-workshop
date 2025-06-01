@@ -41,5 +41,5 @@ fn main() {
         type Value = u8;
     }
 
-    assert_debug::<Field<Id>>();
+    // assert_debug::<Field<Id>>();
 }

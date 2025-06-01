@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use itertools::Itertools;
 use proc_macro::TokenStream;
-use quote::{quote};
-use syn::{parse::Parse, parse_macro_input, AngleBracketedGenericArguments, Data, DeriveInput, GenericArgument, Ident, LitStr, Meta, PathArguments, PathSegment, Type};
+use quote::{quote,};
+use syn::{parse::Parse, parse_macro_input, Data, DeriveInput, GenericArgument, Ident, LitStr, Meta, PathArguments, PathSegment, Type};
 
 struct DebugField {
     name: Ident,
@@ -28,24 +28,10 @@ impl Parse for CustomDebugFmt {
        input.parse()
            .map(|exr_str: LitStr| CustomDebugFmt(exr_str.value()))
            .map_err(|_e| {
-               let err_msg = format!("------------>>>>> Got input: {}", input.to_string());
+               let err_msg = format!("------------>>>>> Got input: {}", input);
                syn::Error::new(input.span(), err_msg)
            })
    }
-}
-
-fn type_path_seg_containing(ty: &Type, ident_name: &str) -> Option<PathSegment> {
-    Some(ty).and_then(|ty| 
-        match ty {
-            Type::Path(type_path) => Some(type_path),
-            _ => None,
-        })
-    .and_then(|type_path| {
-        let path = type_path.path.clone();
-        path.segments.iter()
-            .find(|type_path| type_path.ident == ident_name)
-            .map(|ps| ps.to_owned())
-    })
 }
 
 fn type_path_seg(ty: &Type) -> Vec<PathSegment> {
@@ -74,13 +60,13 @@ fn get_generic_type_parameters(path_segment: &PathSegment) -> Vec<Type> {
                 _ => None
             }).collect();
         type_args
-    }).unwrap_or(vec![])
+    }).unwrap_or_default()
 }
 
 fn type_matches(ty: &Type, name: &str) -> bool {
     match ty {
         Type::Path(path_type) => {
-            path_type.path.segments.iter().find(|segment| segment.ident == name).is_some()
+            path_type.path.segments.iter().any(|segment| segment.ident == name)
         },
         _ => false,
     }
@@ -98,7 +84,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let m_input = parse_macro_input!(input as DeriveInput);
     let struct_name = m_input.ident;
+    let (impl_generics, ty_generics, _where_clause) = m_input.generics.split_for_impl();
     let type_parameter: Vec<_> = m_input.generics.type_params().collect();
+    let type_parameter_str: Vec<_> = type_parameter.iter()
+        .map(|tp| tp.ident.to_string())
+        .collect();
     let struct_name_str = struct_name.to_string();
 
     let mut debug_fields = vec![];
@@ -122,27 +112,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     }
 
-    // let mut out = String::new();
-    // for (k, v) in type_parameters.iter() {
-    //     let dbg = format!("{:?}:      ({}){:?}\n", k, v.len() , v);
-    //     out.push_str(&dbg);
-    // }
-    // panic!("Type Parameters: {:?}\n\n{}\n\n", type_parameters.keys(),out);
-
     // type_parameters has exactly one key-value pair and this is the expected T -> PhantomData
-
     let mut type_excluded_from_guards = vec![];
     for (type_argument, types) in type_parameters.iter() {
         if types.len() == 1 {
             let single_type = types.first().unwrap();
             if type_matches(single_type, "PhantomData") {
-                // TODO don't insert the type, but type->type-path->path->segments->last->ident
                 // in the hope, that this the segment of the type with the meat
                 let ident = get_last_ident_from_path(type_argument).unwrap();
                 type_excluded_from_guards.push(ident.to_string());
             }
         }
     }
+
 
     if let Data::Struct(ref struc) = m_input.data {
         for field in &struc.fields {
@@ -172,6 +154,81 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     }
 
+
+    // TODO find associated types
+    let mut associated_types_by_identifier = HashMap::new();
+    if let Data::Struct(ref struc) = m_input.data {
+        for field in &struc.fields {
+            let path_segments = type_path_seg(&field.ty);
+
+            if path_segments.len() > 1 {
+
+                let t = path_segments.first().unwrap();
+
+                if type_parameter_str.contains(&t.ident.to_string()){
+                    associated_types_by_identifier.insert(t.ident.clone(), field.ty.clone());
+                }
+            }
+
+            if !path_segments.is_empty() {
+                let last_segment = path_segments.last().unwrap();
+                match &last_segment.arguments {
+                    PathArguments::AngleBracketed(args) => {
+                        let first_arg = args.args.first().unwrap();
+                        match first_arg {
+                            GenericArgument::Type(first_type_arg) => {
+                                let path_segments = type_path_seg(first_type_arg);
+
+                                if path_segments.len() >= 1 {
+
+                                    let t = path_segments.first().unwrap();
+
+                                    if type_parameter_str.contains(&t.ident.to_string()){
+                                        associated_types_by_identifier.insert(t.ident.clone(), first_type_arg.clone());
+                                    }
+                                }
+
+                            },
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let type_bounds: Vec<_> = type_parameter.iter()
+        .filter(|tp| !type_excluded_from_guards.contains(&tp.ident.to_string()) )
+        .map(|tp| {
+            let id = &tp.ident;
+            if let Some(assoc_ty) = associated_types_by_identifier.get(&tp.ident) {
+                quote!{ #assoc_ty: std::fmt::Debug }
+            } else {
+                quote!{ #id: std::fmt::Debug }
+            }
+        }).collect();
+
+
+    let where_guards = if type_bounds.is_empty() {
+        quote!{}
+    } else {
+        quote!{
+            where #(#type_bounds),*
+        }
+    };
+
+    let impl_head = if type_parameter.is_empty() {
+        quote! {
+            impl std::fmt::Debug for #struct_name
+        }
+    } else {
+        quote! {
+            impl #impl_generics std::fmt::Debug for #struct_name #ty_generics
+                #where_guards
+        }
+    };
+
     let debug_fields_invocation: Vec<_> = debug_fields.iter().map(|f| {
         let field_name_as_str = f.name_as_str();
         let ident = f.ident();
@@ -194,45 +251,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
     })
     .intersperse(quote! {write!(f, ", ")?;})
     .collect();
-    
-    let type_parameter_list: Vec<_> = type_parameter.iter()
-        .map(|tp| &tp.ident)
-        .collect();
-
-    // for tp in type_parameter.iter() {
-    //     if type_excluded_from_guards.contains(&tp.ident.to_string()) {
-    //         panic!("Yup, {:?} is in {:?}", tp.ident.to_string(), type_excluded_from_guards);
-    //     } else {
-    //         panic!("NOPE, {:?} is not in {:?}", tp.ident.to_string(), type_excluded_from_guards);
-    //     }
-    // }
-
-
-    let type_bounds: Vec<_> = type_parameter.iter()
-        .filter(|tp| !type_excluded_from_guards.contains(&tp.ident.to_string()) )
-        .map(|tp| {
-            let id = &tp.ident;
-            quote!{ #id: std::fmt::Debug }
-        }).collect();
-
-    let where_guards = if type_bounds.is_empty() {
-        quote!{}
-    } else {
-        quote!{
-            where #(#type_bounds),*
-        }
-    };
-
-    let impl_head = if type_parameter.is_empty() {
-        quote! {
-            impl std::fmt::Debug for #struct_name
-        }
-    } else {
-        quote! {
-            impl<#(#type_parameter_list),*> std::fmt::Debug for #struct_name<#(#type_parameter_list),*> 
-                #where_guards
-        }
-    };
 
     let code = quote! {
         #impl_head {
