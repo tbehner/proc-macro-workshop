@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use itertools::Itertools;
 use proc_macro::TokenStream;
-use quote::{quote,};
-use syn::{parse::Parse, parse_macro_input, Data, DeriveInput, GenericArgument, Ident, LitStr, Meta, PathArguments, PathSegment, Type};
+use quote::{quote, ToTokens,};
+use syn::{parenthesized, parse::Parse, parse_macro_input, token::Paren, Data, DeriveInput, Expr, ExprAssign, GenericArgument, Ident, Lit, LitStr, Meta, PathArguments, PathSegment, Token, Type};
 
 struct DebugField {
     name: Ident,
@@ -26,7 +26,7 @@ impl Parse for CustomDebugFmt {
    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
 
        input.parse()
-           .map(|exr_str: LitStr| CustomDebugFmt(exr_str.value()))
+
            .map_err(|_e| {
                let err_msg = format!("------------>>>>> Got input: {}", input);
                syn::Error::new(input.span(), err_msg)
@@ -44,6 +44,26 @@ fn type_path_seg(ty: &Type) -> Vec<PathSegment> {
         let path = type_path.path.clone();
         path.segments.iter().map(|ps| ps.to_owned()).collect()
     }).unwrap_or_default()
+}
+
+#[derive(Debug)]
+struct BoundAttribute {
+    value: String,
+}
+
+impl Parse for BoundAttribute {
+   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+       let assignment: ExprAssign = input.parse()?;
+       if let Expr::Lit(exp_lit) = *assignment.right.to_owned() {
+           if let Lit::Str(str_lit) = exp_lit.lit {
+               return Ok(BoundAttribute{value: str_lit.value()})
+           } else {
+               return Err(syn::Error::new_spanned(assignment.into_token_stream(), "foooo: cannot be parsed!"));
+           }
+       } else {
+           return Err(syn::Error::new_spanned(assignment.into_token_stream(), "foooo: cannot be parsed!"));
+       }
+   }
 }
 
 fn get_generic_type_parameters(path_segment: &PathSegment) -> Vec<Type> {
@@ -79,10 +99,43 @@ fn get_last_ident_from_path(ty: &Type) -> Option<Ident> {
     }
 }
 
-#[proc_macro_derive(CustomDebug, attributes(debug))]
+fn get_bound_attribute(input: &DeriveInput) -> proc_macro2::TokenStream {
+    input.attrs.first().map(|attr|{
+        if let Meta::NameValue(name_value) = &attr.meta {
+            if name_value.path.get_ident().unwrap() != "bound" {
+                panic!("Unknown path in {:?}", attr);
+            }
+
+            if let Expr::Lit(literal_expr) = &name_value.value {
+                if let Lit::Str(literal_str) = &literal_expr.lit {
+                    quote! {#literal_str}
+                } else {
+                    panic!("Unknown literal in {:?}", attr);
+                }
+            } else {
+                panic!("Unknown value in {:?}", attr);
+            }
+        } else {
+            panic!("Not a name value attribute: {:?}", attr);
+        }
+    }).unwrap_or_default()
+}
+
+#[proc_macro_derive(CustomDebug, attributes(debug,bound))]
 pub fn derive(input: TokenStream) -> TokenStream {
 
     let m_input = parse_macro_input!(input as DeriveInput);
+    let bound_attribute: Option<BoundAttribute>  = m_input.attrs.first().and_then(|attr|
+        match &attr.meta {
+            Meta::List(meta_list) => match meta_list.parse_args() {
+                Ok(bound) => Some(bound),
+                Err(e) => {
+                    panic!("This did not work: {:?}", e);
+                }
+            }
+            _ => None,
+        }
+    );
     let struct_name = m_input.ident;
     let (impl_generics, ty_generics, _where_clause) = m_input.generics.split_for_impl();
     let type_parameter: Vec<_> = m_input.generics.type_params().collect();
@@ -222,6 +275,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
         quote! {
             impl std::fmt::Debug for #struct_name
         }
+    } else if let Some(bound) = &bound_attribute{
+        let custom: proc_macro2::TokenStream = bound.value.parse().unwrap();
+        quote!{
+            impl #impl_generics std::fmt::Debug for #struct_name #ty_generics
+                where #custom
+        }
     } else {
         quote! {
             impl #impl_generics std::fmt::Debug for #struct_name #ty_generics
@@ -230,7 +289,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
     };
 
     let debug_fields_invocation: Vec<_> = debug_fields.iter().map(|f| {
-        let field_name_as_str = f.name_as_str();
         let ident = f.ident();
         let ident_str = format!("{}", ident);
         match &f.custom_fmt{
