@@ -4,14 +4,18 @@ use quote::quote;
 use std::ops::Range;
 use syn::{braced, parse::Parse, parse_macro_input, Expr, ExprRange, Ident, Lit, Token};
 
-fn get_range(input: &ExprRange) -> Range<u16> {
-    let start_expr = *input.start.clone().unwrap();
-    let start = get_limit(start_expr);
-    let end_expr = *input.end.clone().unwrap();
-    let end = get_limit(end_expr);
-    start..end
+/// Get a literal integer from an Expr
+fn get_int_from_expr(expr: Expr) -> u16 {
+    if let Expr::Lit(lit_expr) = expr {
+        if let Lit::Int(lit_int) = lit_expr.lit {
+            lit_int.base10_parse::<u16>().expect("a valid integer")
+        } else {
+            panic!("Not a integer at start of range!");
+        }
+    } else {
+        panic!("Not a literal at start of range!");
+    }
 }
-
 
 #[derive(Debug)]
 struct Seq {
@@ -29,7 +33,11 @@ fn clone_group_with_stream(old_group: &Group, stream: TokenStream) -> Group {
 impl Seq {
 
     fn get_range(&self) -> Range<u16> {
-        get_range(&self.range)
+        let start_expr = *self.range.start.clone().unwrap();
+        let start = get_int_from_expr(start_expr);
+        let end_expr = *self.range.end.clone().unwrap();
+        let end = get_int_from_expr(end_expr);
+        start..end
     }
 
     fn peek_is_tilde_token(&self, iter: &mut MultiPeek<token_stream::IntoIter>) -> bool {
@@ -116,12 +124,17 @@ impl Seq {
         quote! {#(#all)*}
     }
 
+    /// Find the repeated section in the macro and repeat it
+    ///
+    /// The returned values are an optional pre- and post-section that are not repeated
+    /// as well as the repeated section.
+    ///
+    /// (pre, repeated_section, post)
     fn identify_repeat_section(&self, stream: &TokenStream) -> (Option<TokenStream>, TokenStream, Option<TokenStream>) {
-        // find a Punct(#), followed by a Group with paranthesis as delimiter, followed by a
-        // Punct(*)
-        let mut pre = vec![];
+        // find a Punct(#), followed by a Group with paranthesis as delimiter, followed by a Punct(*)
+        let mut pre = TokenStream::new();
         let mut repeat_section = None;
-        let mut post = vec![];
+        let mut post = TokenStream::new();
         let mut iter = stream.clone().into_iter().multipeek();
 
         while let Some(t) = iter.next() {
@@ -134,7 +147,7 @@ impl Seq {
                         iter.next();
                     } else {
                         // not it
-                        pre.push(tt_punct.clone());
+                        pre.extend(Some(tt_punct.clone()));
                     }
                 }
 
@@ -146,43 +159,44 @@ impl Seq {
                         if let (Some(pre_sec), Some(post_sec)) = (maybe_pre, maybe_post) {
                             // repeat sec here then create group with [pre, #(sec)*, post] as stream
 
-                            let mut complete = vec![];
+                            let mut complete = TokenStream::new();
                             complete.extend(pre_sec);
                             complete.extend(sec);
                             complete.extend(post_sec);
 
-                            let group_section = clone_group_with_stream(gr, TokenStream::from_iter(complete));
+                            let group_section = clone_group_with_stream(gr, complete);
 
-                            repeat_section = Some(TokenStream::from_iter(vec![TokenTree::Group(group_section)]));
+                            repeat_section = Some(TokenStream::from_iter([TokenTree::Group(group_section)]));
                         } else {
                             // push the entire group to pre
-                            pre.push(token_tree_group.clone());
+                            pre.extend(Some(token_tree_group.clone()));
                         }
                     } else {
                         // else add the group to post
-                        post.push(token_tree_group.clone());
+                        post.extend(Some(token_tree_group.clone()));
                     }
                 }
                 _ => {
                     if repeat_section.is_none() {
-                        pre.push(t);
+                        pre.extend(Some(t));
                     } else {
-                        post.push(t);
+                        post.extend(Some(t));
                     }
                 },
             }
         }
 
         if let Some(ts) = repeat_section {
-            let pre_token_stream = TokenStream::from_iter(pre);
-            let post_token_stream = TokenStream::from_iter(post);
-            (Some(pre_token_stream), ts, Some(post_token_stream))
+            (Some(pre), ts, Some(post))
         } else {
             (None, self.tokens.clone(), None)
         }
     }
 
-    fn quote(&self) -> TokenStream {
+    /// Generate the TokenStream with a repeated section.
+    ///
+    /// Entry point to the macro.
+    pub fn quote(&self) -> TokenStream {
         let (maybe_pre, repeat_section , maybe_post)= self.identify_repeat_section(&self.tokens);
         if let (Some(pre), Some(post)) = (maybe_pre, maybe_post) {
             quote!{#pre #repeat_section #post}
@@ -192,17 +206,6 @@ impl Seq {
     }
 }
 
-fn get_limit(expr: Expr) -> u16 {
-    if let Expr::Lit(lit_expr) = expr {
-        if let Lit::Int(lit_int) = lit_expr.lit {
-            lit_int.base10_parse::<u16>().expect("a valid integer")
-        } else {
-            panic!("Not a integer at start of range!");
-        }
-    } else {
-        panic!("Not a literal at start of range!");
-    }
-}
 
 
 impl Parse for Seq {
