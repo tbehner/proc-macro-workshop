@@ -1,4 +1,5 @@
-use proc_macro2::{Span, TokenStream, TokenTree, Group};
+use itertools::{Itertools, MultiPeek};
+use proc_macro2::{token_stream, Group, Span, TokenStream, TokenTree};
 use quote::quote;
 use std::ops::Range;
 use syn::{braced, parse::Parse, parse_macro_input, parse_quote, visit_mut, visit_mut::VisitMut, Expr, ExprRange, Ident, Lit, LitInt, Token};
@@ -18,73 +19,54 @@ fn get_range(input: &ExprRange) -> Range<u16> {
     start..end
 }
 
-struct ReplaceIdent{
-    ident: Ident,
-    replacement: u16,
-}
-
-impl ReplaceIdent {
-    fn new(ident: Ident, replacement: u16) -> ReplaceIdent {
-        ReplaceIdent { ident: ident, replacement: replacement }
-    }
-}
-
-impl VisitMut for ReplaceIdent {
-
-    // fn visit_token_stream_mut(&mut self, i: &mut proc_macro2::TokenStream) {
-    //     let ident_res: syn::Result<Ident> = syn::parse2(i.clone());
-    //     if let Ok(ident) = ident_res {
-    //         panic!("Any Identifier found!");
-    //         if ident.to_string() == self.ident.to_string() {
-    //             panic!("Identifier found!");
-    //             let value = self.replacement;
-    //             *i = quote!{ #value };
-    //         } else {
-    //             panic!("differen identifier: {}", ident.to_string());
-    //         }
-    //     } 
-    // }
-
-    fn visit_expr_mut(&mut self, i: &mut syn::Expr) {
-        if let Expr::Path(p_expr) = i {
-            if let Some(path_ident) = p_expr.path.get_ident() {
-                if *path_ident.to_string() == self.ident.to_string() {
-                    let value = self.replacement;
-                    *i = parse_quote!(#value);
-                }
-            } else {
-                panic!("Found different identifier: {:?}", p_expr);
-            }
-        }
-        visit_mut::visit_expr_mut(self, i);
-    }
-}
-
 impl Seq {
-    fn get_ident(&self) -> &Ident {
-        &self.ident
-    }
 
     fn get_range(&self) -> Range<u16> {
         get_range(&self.range)
     }
 
+    fn peek_is_tilde_token(&self, iter: &mut MultiPeek<token_stream::IntoIter>) -> bool {
+        if let Some(TokenTree::Punct(maybe_tilde)) = iter.peek() {
+            maybe_tilde.as_char() == '~'
+        } else {
+            false
+        }
+    }
+
+    fn peek_is_ident(&self, iter: &mut MultiPeek<token_stream::IntoIter>) -> bool {
+        if let Some(TokenTree::Ident(i)) = iter.peek() {
+            self.ident.to_string() == i.to_string()
+        } else {
+            false
+        }
+    }
+
+
     fn subs(&self, stream: &TokenStream, num: u16) -> TokenStream {
         let mut out: Vec<TokenTree> = vec![];
-        for t in stream.clone().into_iter() {
+        let mut iter = stream.clone().into_iter().multipeek();
+        while let Some(t) = iter.next() {
             match &t {
                 i@TokenTree::Ident(ref ident) => {
                     if ident.to_string() == self.ident.to_string() {
-                        // push the expr to out
                         let num_word = format!("{}", num);
                         let num_tokens: TokenStream = num_word.parse().unwrap();
                         let num_stream = quote! {#num_tokens};
                         out.extend(num_stream.into_iter());
+                    } else if self.peek_is_tilde_token(&mut iter) && self.peek_is_ident(&mut iter) {
+                        let num_word = format!("{}{}", ident, num);
+                        let num_tokens: TokenStream = num_word.parse().unwrap();
+                        let num_stream = quote! {#num_tokens};
+                        out.extend(num_stream.into_iter());
+                        // since we have found the identifier, we have to extend the iter twice
+                        for _ in 0..2 {
+                            iter.next();
+                        }
                     } else {
                         out.push(i.clone());
-                    }
+                    } 
                 }
-                g@TokenTree::Group(ref gr) => {
+                TokenTree::Group(ref gr) => {
                     // recurse on gr.stream
                     let new_stream = self.subs(&gr.stream(), num);
                     let mut new_group = Group::new(gr.delimiter(), new_stream);
@@ -113,8 +95,7 @@ impl Seq {
 fn get_limit(expr: Expr) -> u16 {
     if let Expr::Lit(lit_expr) = expr {
         if let Lit::Int(lit_int) = lit_expr.lit {
-            let value = lit_int.base10_parse::<u16>().unwrap();
-            value
+            lit_int.base10_parse::<u16>().expect("a valid integer")
         } else {
             panic!("Not a integer at start of range!");
         }
