@@ -18,9 +18,13 @@
 
   # https://devenv.sh/scripts/
   scripts.hello.exec = ''
+    echo hello from $GREET
   '';
 
-  enterShell = '' '';
+  enterShell = ''
+    hello
+    git --version
+  '';
 
   # https://devenv.sh/tasks/
   # tasks = {
@@ -30,6 +34,8 @@
 
   # https://devenv.sh/tests/
   enterTest = ''
+    echo "Running tests"
+    git --version | grep --color=auto "${pkgs.git.version}"
   '';
 
   # https://devenv.sh/git-hooks/
