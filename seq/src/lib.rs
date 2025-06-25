@@ -71,13 +71,22 @@ impl Seq {
             match &t {
                 i@TokenTree::Ident(ref ident) => {
                     if ident.to_string() == self.ident.to_string() {
+                        // TODO set span respectively
                         let num_word = format!("{}", num);
                         let num_tokens: TokenStream = num_word.parse().unwrap();
                         out.extend(num_tokens.into_iter());
                     } else if self.peek_is_tilde_token(&mut iter) && self.peek_is_ident(&mut iter) {
+                        // TODO set span respectively
                         let num_word = format!("{}{}", ident, num);
+                        // we get the span from the identifier
                         let num_tokens: TokenStream = num_word.parse().unwrap();
-                        out.extend(num_tokens.into_iter());
+                        if let Some(TokenTree::Ident(new_ident)) = num_tokens.into_iter().next() {
+                            let mut new_ident_with_span = new_ident;
+                            new_ident_with_span.set_span(ident.span());
+                            out.extend(std::iter::once(TokenTree::Ident(new_ident_with_span)));
+                        } else {
+                            panic!("The identifier I just created cannot be parsed as an identifier...")
+                        }
                         // since we have found the identifier, we have to extend the iter twice
                         for _ in 0..2 {
                             iter.next();
