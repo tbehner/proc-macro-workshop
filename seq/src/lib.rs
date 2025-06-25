@@ -1,7 +1,7 @@
 use itertools::{Itertools, MultiPeek};
 use proc_macro2::{token_stream, Delimiter, Group, TokenStream, TokenTree};
 use quote::quote;
-use std::ops::Range;
+use std::{io::repeat, ops::Range};
 use syn::{braced, parse::Parse, parse_macro_input, Expr, ExprRange, Ident, Lit, Token};
 
 /// Get a literal integer from an Expr
@@ -37,7 +37,14 @@ impl Seq {
         let start = get_int_from_expr(start_expr);
         let end_expr = *self.range.end.clone().unwrap();
         let end = get_int_from_expr(end_expr);
-        start..end
+        match self.range.limits {
+            syn::RangeLimits::HalfOpen(_) => {
+                start..end
+            },
+            syn::RangeLimits::Closed(_) => {
+                start..(end+1)
+            }
+        }
     }
 
     fn peek_is_tilde_token(&self, iter: &mut MultiPeek<token_stream::IntoIter>) -> bool {
@@ -198,15 +205,16 @@ impl Seq {
     /// Entry point to the macro.
     pub fn quote(&self) -> TokenStream {
         let (maybe_pre, repeat_section , maybe_post)= self.identify_repeat_section(&self.tokens);
+        // repeat_section should be equal to self.tokens, since there is no repeat section,
+        // and pre and post should be None
         if let (Some(pre), Some(post)) = (maybe_pre, maybe_post) {
             quote!{#pre #repeat_section #post}
         } else {
-            quote!{#repeat_section}
+            let repeated_section = self.repeat_section(repeat_section);
+            quote!{#repeated_section}
         }
     }
 }
-
-
 
 impl Parse for Seq {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
