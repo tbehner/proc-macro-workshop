@@ -10,10 +10,20 @@ fn get_int_from_expr(expr: Expr) -> u16 {
         if let Lit::Int(lit_int) = lit_expr.lit {
             lit_int.base10_parse::<u16>().expect("a valid integer")
         } else {
-            panic!("Not a integer at start of range!");
+            panic!("Not a integer at limit of range!");
+        }
+    } else if let Expr::Group(expr_group) = expr {
+        if let Expr::Lit(lit_expr) = *expr_group.expr {
+            if let Lit::Int(lit_int) = lit_expr.lit {
+                lit_int.base10_parse::<u16>().expect("a valid integer")
+            } else {
+                panic!("Not a integer at limit of range!");
+            }
+        } else {
+            panic!("Not a literal at limit of range!");
         }
     } else {
-        panic!("Not a literal at start of range!");
+        panic!("Not a literal at limit of range!");
     }
 }
 
@@ -76,9 +86,7 @@ impl Seq {
                         let num_tokens: TokenStream = num_word.parse().unwrap();
                         out.extend(num_tokens.into_iter());
                     } else if self.peek_is_tilde_token(&mut iter) && self.peek_is_ident(&mut iter) {
-                        // TODO set span respectively
                         let num_word = format!("{}{}", ident, num);
-                        // we get the span from the identifier
                         let num_tokens: TokenStream = num_word.parse().unwrap();
                         if let Some(TokenTree::Ident(new_ident)) = num_tokens.into_iter().next() {
                             let mut new_ident_with_span = new_ident;
